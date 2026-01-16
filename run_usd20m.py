@@ -1,7 +1,8 @@
 import os
 import subprocess
 import sys
-from typing import Optional
+import threading
+from typing import Optional, Dict, List, Set
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -136,13 +137,6 @@ def parse_amount_to_float(series: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
 
-def compute_usd_from_abs(abs_amount: pd.Series, ccy: pd.Series, fx_rate_local_per_usd: dict) -> pd.Series:
-    """USD = abs(外币金额) / (外币/美元)"""
-    ccy_upper = ccy.astype(str).str.upper().str.strip()
-    rate = ccy_upper.map(fx_rate_local_per_usd)  # 外币/美元
-    return abs_amount / rate
-
-
 def apply_tradeid_rule_keep_all_none(df_filtered: pd.DataFrame) -> pd.DataFrame:
     """
     只对 Product Type 为 Cash / StructuredFlows 的记录执行：
@@ -156,7 +150,6 @@ def apply_tradeid_rule_keep_all_none(df_filtered: pd.DataFrame) -> pd.DataFrame:
     if any(c not in df.columns for c in required):
         return df
 
-    # 保留原顺序
     df["__row_order"] = range(len(df))
 
     mask = df["Product Type"].astype(str).str.strip().isin(["Cash", "StructuredFlows"])
@@ -174,10 +167,8 @@ def apply_tradeid_rule_keep_all_none(df_filtered: pd.DataFrame) -> pd.DataFrame:
 
         g_none = g_sorted[g_sorted["Transfer Type"].astype(str).str.strip().str.upper() == "NONE"]
         if not g_none.empty:
-            # NONE 有多少保留多少
             kept_parts.append(g_none)
         else:
-            # 没有 NONE 就取第一条
             kept_parts.append(g_sorted.iloc[[0]])
 
     picked = pd.concat(kept_parts, ignore_index=False)
@@ -188,19 +179,11 @@ def apply_tradeid_rule_keep_all_none(df_filtered: pd.DataFrame) -> pd.DataFrame:
 
 
 def autofit_column_width(ws, min_width=8, max_width=60, extra=2):
-    """
-    根据单元格内容长度自适应列宽
-    - min_width: 最小列宽
-    - max_width: 最大列宽（避免超宽）
-    - extra: 额外留白
-    """
+    """根据单元格内容长度自适应列宽"""
     col_max = {}
     for row in ws.iter_rows(values_only=True):
         for j, val in enumerate(row, start=1):
-            if val is None:
-                length = 0
-            else:
-                length = len(str(val))
+            length = 0 if val is None else len(str(val))
             col_max[j] = max(col_max.get(j, 0), length)
 
     for j, max_len in col_max.items():
@@ -227,44 +210,15 @@ def write_df_to_existing_workbook(file_path: str, sheet_name: str, df: pd.DataFr
 
 
 def load_fx_rates_from_rate_sheet(file_path: str, default_threshold_usd: float) -> tuple[dict, float, str]:
-    """从 rate sheet 读取 LIMIT AMOUNT，推导 外币/美元 汇率，并返回 USD 阈值"""
-
-    def norm_key(text: str) -> str:
-        return str(text).strip().lower().replace(" ", "").replace("_", "")
-
-    def extract_limit_amounts_from_raw(raw_df: pd.DataFrame, header_row_idx: Optional[int]) -> dict:
-        if raw_df.empty:
-            return {}
-
-        ccy_idx = 0
-        limit_idx = None
-        if header_row_idx is not None:
-            header_cells = raw_df.iloc[header_row_idx].tolist()
-            for idx, cell in enumerate(header_cells):
-                if str(cell).strip().upper() == "CCY":
-                    ccy_idx = idx
-                    break
-            for idx, cell in enumerate(header_cells):
-                if "LIMIT" in str(cell).strip().upper():
-                    limit_idx = idx
-                    break
-
-        if limit_idx is None:
-            limit_idx = 2 if raw_df.shape[1] > 2 else 1
-
-        start_idx = header_row_idx + 1 if header_row_idx is not None else 0
-        limits = {}
-        for _, row in raw_df.iloc[start_idx:].iterrows():
-            ccy = str(row.iloc[ccy_idx]).strip().upper()
-            if not ccy or ccy == "CCY" or len(ccy) != 3:
-                continue
-            val = row.iloc[limit_idx] if limit_idx < len(row) else None
-            val_num = pd.to_numeric(str(val).replace(",", "").replace(" ", ""), errors="coerce")
-            if pd.notna(val_num) and val_num > 0:
-                limits[ccy] = float(val_num)
-        return limits
-
+    """
+    从 rate sheet 读取：
+    - USD 阈值（从包含 USD 的行里取最大数值）
+    - LIMIT AMOUNT 列（通过 CCY 表头行定位列索引）
+    然后推导 外币/美元 汇率：rate = LIMIT_AMOUNT / THRESHOLD_USD
+    """
+    # 1) 定位 rate sheet
     xls = pd.ExcelFile(file_path, engine="openpyxl")
+
     rate_sheet = None
     for name in xls.sheet_names:
         if str(name).strip().lower() == RATE_SHEET_NAME:
@@ -272,119 +226,122 @@ def load_fx_rates_from_rate_sheet(file_path: str, default_threshold_usd: float) 
             break
 
     if rate_sheet is None:
+        # 扫描前 30 行，任意单元格出现 CCY 则认为是 rate 表
         for name in xls.sheet_names:
             try:
-                raw_head = pd.read_excel(file_path, sheet_name=name, header=None, engine="openpyxl", nrows=20)
+                head = pd.read_excel(file_path, sheet_name=name, header=None, engine="openpyxl", nrows=30)
             except Exception:
                 continue
-            for _, row in raw_head.iterrows():
-                if str(row.iloc[0]).strip().upper() == "CCY":
-                    rate_sheet = name
+            found = False
+            for _, row in head.iterrows():
+                cells = [str(x).strip().upper() for x in row.tolist()]
+                if "CCY" in cells:
+                    found = True
                     break
-            if rate_sheet:
+            if found:
+                rate_sheet = name
                 break
 
     if rate_sheet is None:
-        raise ValueError("未找到 rate sheet，请确认文件包含 rate 表。")
+        raise ValueError("未找到 rate sheet，请确认文件包含 rate 表且表头含 CCY。")
 
     raw = pd.read_excel(file_path, sheet_name=rate_sheet, header=None, engine="openpyxl")
 
+    # 2) 阈值：从包含 USD 的行里取最大数值（通常是 20,000,000.00）
     threshold_usd = default_threshold_usd
-
     for _, row in raw.iterrows():
-        if str(row.iloc[0]).strip().upper() != "USD":
+        cells = [str(x).strip().upper() for x in row.tolist()]
+        if "USD" not in cells:
             continue
-        val2 = row.iloc[1] if len(row) > 1 else None
-        val3 = row.iloc[2] if len(row) > 2 else None
-
-        val2_num = pd.to_numeric(str(val2).replace(",", "").replace(" ", ""), errors="coerce")
-        val3_num = pd.to_numeric(str(val3).replace(",", "").replace(" ", ""), errors="coerce")
-
-        if pd.notna(val2_num) and (pd.isna(val3) or pd.isna(val3_num)) and val2_num > 1000:
-            threshold_usd = float(val2_num)
+        nums = []
+        for x in row.tolist():
+            v = pd.to_numeric(str(x).replace(",", "").replace(" ", ""), errors="coerce")
+            if pd.notna(v) and v > 0:
+                nums.append(float(v))
+        if nums:
+            threshold_usd = max(nums)
             break
-
-    if threshold_usd == default_threshold_usd:
-        for _, row in raw.iterrows():
-            if str(row.iloc[0]).strip().upper() != "USD":
-                continue
-            val2 = row.iloc[1] if len(row) > 1 else None
-            val3 = row.iloc[2] if len(row) > 2 else None
-
-            val2_num = pd.to_numeric(str(val2).replace(",", "").replace(" ", ""), errors="coerce")
-            val3_num = pd.to_numeric(str(val3).replace(",", "").replace(" ", ""), errors="coerce")
-
-            if pd.notna(val3_num) and val3_num > 0 and (pd.isna(val2_num) or val2_num <= 2):
-                threshold_usd = float(val3_num)
-                break
-
-    header_row = None
-    for idx, row in raw.iterrows():
-        first = str(row.iloc[0]).strip().upper()
-        if first == "CCY":
-            header_row = idx
-            break
-
-    if header_row is None:
-        header_row = 0
-
-    rates_limit_map = {}
-    try:
-        df = pd.read_excel(file_path, sheet_name=rate_sheet, header=header_row, engine="openpyxl")
-        df.columns = [str(c).strip() for c in df.columns]
-        col_norm = {norm_key(c): c for c in df.columns}
-
-        ccy_col = None
-        for key in ["ccy", "currency", "curr"]:
-            if key in col_norm:
-                ccy_col = col_norm[key]
-                break
-        if not ccy_col:
-            for key, orig in col_norm.items():
-                if "ccy" in key:
-                    ccy_col = orig
-                    break
-
-        limit_col = None
-        for key in ["limitamount", "limitamt", "limit"]:
-            if key in col_norm:
-                limit_col = col_norm[key]
-                break
-        if not limit_col:
-            for key, orig in col_norm.items():
-                if "limit" in key and "amount" in key:
-                    limit_col = orig
-                    break
-
-        if ccy_col and limit_col:
-            df = df[[ccy_col, limit_col]].copy()
-            df[ccy_col] = df[ccy_col].astype(str).str.strip().str.upper()
-            df[limit_col] = (
-                df[limit_col]
-                .astype(str)
-                .str.replace(",", "", regex=False)
-                .str.replace(" ", "", regex=False)
-            )
-            df[limit_col] = pd.to_numeric(df[limit_col], errors="coerce")
-            df = df.dropna(subset=[ccy_col, limit_col])
-            df = df[df[ccy_col] != "CCY"]
-            rates_limit_map = {row[ccy_col]: float(row[limit_col]) for _, row in df.iterrows()}
-    except Exception:
-        rates_limit_map = {}
-
-    if not rates_limit_map:
-        rates_limit_map = extract_limit_amounts_from_raw(raw, header_row)
-
-    if not rates_limit_map:
-        raise ValueError("rate sheet 未读取到有效汇率数据。")
 
     if not threshold_usd or threshold_usd <= 0:
         threshold_usd = default_threshold_usd
 
+    # 3) 定位 CCY 行 + LIMIT AMOUNT 列索引（在整行找，不依赖 A 列）
+    header_row = None
+    ccy_col_idx = None
+    limit_col_idx = None
+
+    for idx, row in raw.iterrows():
+        cells = [str(x).strip().upper() for x in row.tolist()]
+        if "CCY" in cells:
+            header_row = idx
+            ccy_col_idx = cells.index("CCY")
+
+            # 优先找 "LIMIT AMOUNT"，否则找包含 LIMIT 的列
+            for j, c in enumerate(cells):
+                if "LIMIT" in c and "AMOUNT" in c:
+                    limit_col_idx = j
+                    break
+            if limit_col_idx is None:
+                for j, c in enumerate(cells):
+                    if "LIMIT" in c:
+                        limit_col_idx = j
+                        break
+            break
+
+    if header_row is None or ccy_col_idx is None or limit_col_idx is None:
+        raise ValueError("rate 表格式无法识别：未找到 CCY 或 LIMIT AMOUNT 表头。")
+
+    # 4) 抽取 LIMIT AMOUNT
+    rates_limit_map: Dict[str, float] = {}
+    for _, r in raw.iloc[header_row + 1 :].iterrows():
+        ccy = str(r.iloc[ccy_col_idx]).strip().upper()
+        if not ccy or ccy == "CCY" or len(ccy) != 3:
+            continue
+        val = r.iloc[limit_col_idx]
+        val_num = pd.to_numeric(str(val).replace(",", "").replace(" ", ""), errors="coerce")
+        if pd.notna(val_num) and float(val_num) > 0:
+            rates_limit_map[ccy] = float(val_num)
+
+    if not rates_limit_map:
+        raise ValueError("rate 表未读取到有效 LIMIT AMOUNT 数据。")
+
+    # 5) 推导 外币/美元
     rates = {ccy: amt / threshold_usd for ccy, amt in rates_limit_map.items()}
     rates.setdefault("USD", 1.0)
 
-    return rates, threshold_usd, rate_sheet
+    return rates, float(threshold_usd), rate_sheet
+
+
+def prescan_missing_currencies(
+    file_path: str, rate_sheet_name: str, fx_rate_local_per_usd: dict
+) -> list[str]:
+    """
+    预扫描（前 3 个数据表）所有 SettleCurrency，找出 fx_rate_local_per_usd 中缺失的币种
+    """
+    xls = pd.ExcelFile(file_path, engine="openpyxl")
+    data_sheets = [s for s in xls.sheet_names if s not in (rate_sheet_name, OUTPUT_SHEET_NAME)]
+    sheet_names = data_sheets[:3]
+
+    missing: Set[str] = set()
+    for sh in sheet_names:
+        try:
+            df = pd.read_excel(file_path, sheet_name=sh, engine="openpyxl")
+        except Exception:
+            continue
+
+        df = normalize_columns(df)
+        if "SettleCurrency" not in df.columns:
+            continue
+
+        ccy_upper = df["SettleCurrency"].astype(str).str.upper().str.strip()
+        for c in ccy_upper.unique().tolist():
+            if not c or c == "NAN" or len(str(c).strip()) != 3:
+                continue
+            c = str(c).strip().upper()
+            if c not in fx_rate_local_per_usd:
+                missing.add(c)
+
+    return sorted(missing)
 
 
 # =========================
@@ -398,6 +355,12 @@ def process_workbook(
     missing_cb=None,
     manual_threshold: Optional[str] = None,
     manual_rates_text: Optional[str] = None,
+    # 覆盖参数（UI 预处理后用）
+    fx_rate_override: Optional[dict] = None,
+    threshold_override: Optional[float] = None,
+    rate_sheet_override: Optional[str] = None,
+    sheet_source_override: Optional[str] = None,
+    suppress_missing_ccy: Optional[Set[str]] = None,
 ) -> int:
     def report_status(msg: str):
         if status_cb:
@@ -408,32 +371,39 @@ def process_workbook(
             progress_cb(step, total)
 
     report_status("读取汇率...")
-    manual_threshold_value = parse_amount_input(manual_threshold or "")
-    manual_rates = parse_manual_rates(manual_rates_text or "")
 
-    try:
-        fx_rate_local_per_usd, threshold_usd, rate_sheet = load_fx_rates_from_rate_sheet(
-            file_path, THRESHOLD_USD
-        )
-        sheet_source = "sheet"
-    except ValueError as exc:
+    if fx_rate_override is not None:
+        fx_rate_local_per_usd = dict(fx_rate_override)
+        threshold_usd = float(threshold_override or THRESHOLD_USD)
+        rate_sheet = rate_sheet_override or RATE_SHEET_NAME
+        sheet_source = sheet_source_override or "override"
+    else:
+        manual_threshold_value = parse_amount_input(manual_threshold or "")
+        manual_rates = parse_manual_rates(manual_rates_text or "")
+
+        try:
+            fx_rate_local_per_usd, threshold_usd, rate_sheet = load_fx_rates_from_rate_sheet(
+                file_path, THRESHOLD_USD
+            )
+            sheet_source = "sheet"
+        except ValueError as exc:
+            if manual_rates:
+                fx_rate_local_per_usd = {}
+                threshold_usd = manual_threshold_value or THRESHOLD_USD
+                rate_sheet = "手动输入"
+                sheet_source = "manual"
+            else:
+                raise ValueError("未读取到 rate 表或 rate 表格式无法识别，请在手动汇率中输入后重试。") from exc
+
+        if manual_threshold_value:
+            threshold_usd = manual_threshold_value
+
         if manual_rates:
-            fx_rate_local_per_usd = {}
-            threshold_usd = manual_threshold_value or THRESHOLD_USD
-            rate_sheet = "手动输入"
-            sheet_source = "manual"
-        else:
-            raise ValueError("未读取到 rate 表，请在手动汇率中输入后重试。") from exc
+            fx_rate_local_per_usd.update(manual_rates)
+            if sheet_source == "sheet":
+                sheet_source = "sheet+manual"
 
-    if manual_threshold_value:
-        threshold_usd = manual_threshold_value
-
-    if manual_rates:
-        fx_rate_local_per_usd.update(manual_rates)
-        if sheet_source == "sheet":
-            sheet_source = "sheet+manual"
-
-    fx_rate_local_per_usd.setdefault("USD", 1.0)
+        fx_rate_local_per_usd.setdefault("USD", 1.0)
 
     if rates_cb:
         rates_cb(
@@ -459,8 +429,7 @@ def process_workbook(
     report_progress(0, total_steps)
 
     results = []
-
-    missing_ccy_set = set()
+    missing_ccy_set: Set[str] = set()
 
     for idx, sh in enumerate(sheet_names, start=1):
         report_status(f"处理中：{sh}")
@@ -479,6 +448,7 @@ def process_workbook(
 
         ccy_upper = df["SettleCurrency"].astype(str).str.upper().str.strip()
         rate = ccy_upper.map(fx_rate_local_per_usd)
+
         missing_ccy = sorted(set(ccy_upper[rate.isna()].tolist()))
         missing_ccy = [c for c in missing_ccy if c and c != "NAN"]
         if missing_ccy:
@@ -501,7 +471,10 @@ def process_workbook(
     report_status("写入结果...")
 
     if missing_ccy_set and missing_cb:
-        missing_cb(sorted(missing_ccy_set))
+        sup = suppress_missing_ccy or set()
+        to_warn = sorted(set(missing_ccy_set) - set(sup))
+        if to_warn:
+            missing_cb(to_warn)
 
     if results:
         out_df = pd.concat(results, ignore_index=True)
@@ -537,19 +510,22 @@ def open_file_path(file_path: str) -> None:
 def load_qt_modules():
     try:
         from PySide6 import QtCore, QtGui, QtWidgets
-        return "PySide6", QtCore, QtGui, QtWidgets, QtCore.Signal
+
+        return "PySide6", QtCore, QtGui, QtWidgets, QtCore.Signal, QtCore.Slot
     except Exception:
         pass
 
     try:
         from PyQt6 import QtCore, QtGui, QtWidgets
-        return "PyQt6", QtCore, QtGui, QtWidgets, QtCore.pyqtSignal
+
+        return "PyQt6", QtCore, QtGui, QtWidgets, QtCore.pyqtSignal, QtCore.pyqtSlot
     except Exception:
         pass
 
     try:
         from PyQt5 import QtCore, QtGui, QtWidgets
-        return "PyQt5", QtCore, QtGui, QtWidgets, QtCore.pyqtSignal
+
+        return "PyQt5", QtCore, QtGui, QtWidgets, QtCore.pyqtSignal, QtCore.pyqtSlot
     except Exception:
         return None
 
@@ -561,7 +537,7 @@ def launch_ui() -> bool:
         print("请先执行: python -m pip install PySide6")
         return False
 
-    _qt_name, QtCore, QtGui, QtWidgets, Signal = qt_modules
+    _qt_name, QtCore, QtGui, QtWidgets, Signal, Slot = qt_modules
     Qt = QtCore.Qt
 
     def get_qt_plugins_path() -> Optional[str]:
@@ -669,11 +645,109 @@ def launch_ui() -> bool:
             line_y = int(self.height() * 0.32)
             painter.drawLine(0, line_y, self.width(), line_y)
 
+    class MissingRatesDialog(QtWidgets.QDialog):
+        """
+        表格填空：输入缺失币种的 外币/美元
+        - 继续：返回 {CCY: rate}
+        - 跳过：返回 {}
+        """
+        def __init__(self, missing_list: List[str], parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("补充缺失汇率")
+            self.setMinimumSize(520, 360)
+            self._rates: Dict[str, float] = {}
+            self._skipped = False
+            self._build(missing_list)
+
+        def _build(self, missing_list: List[str]):
+            layout = QtWidgets.QVBoxLayout(self)
+            layout.setContentsMargins(14, 14, 14, 14)
+            layout.setSpacing(10)
+
+            tip = QtWidgets.QLabel(
+                "rate 表未匹配到以下币种的汇率。\n"
+                "请按“外币/美元”填写（例如：JPY 填 156.90）。留空表示跳过该币种。"
+            )
+            tip.setWordWrap(True)
+            layout.addWidget(tip)
+
+            self.table = QtWidgets.QTableWidget()
+            self.table.setColumnCount(2)
+            self.table.setHorizontalHeaderLabels(["CCY", "外币/美元"])
+            self.table.setRowCount(len(missing_list))
+            self.table.verticalHeader().setVisible(False)
+            self.table.horizontalHeader().setStretchLastSection(True)
+            self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.AllEditTriggers)
+
+            for i, ccy in enumerate(missing_list):
+                item_ccy = QtWidgets.QTableWidgetItem(ccy)
+                item_ccy.setFlags(item_ccy.flags() & ~Qt.ItemFlag.ItemIsEditable if hasattr(Qt, "ItemFlag") else item_ccy.flags())
+                self.table.setItem(i, 0, item_ccy)
+                self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(""))
+
+            self.table.resizeColumnsToContents()
+            layout.addWidget(self.table, 1)
+
+            btn_row = QtWidgets.QHBoxLayout()
+            btn_row.addStretch(1)
+
+            self.skip_btn = QtWidgets.QPushButton("跳过")
+            self.ok_btn = QtWidgets.QPushButton("继续")
+            btn_row.addWidget(self.skip_btn)
+            btn_row.addWidget(self.ok_btn)
+            layout.addLayout(btn_row)
+
+            self.skip_btn.clicked.connect(self._on_skip)
+            self.ok_btn.clicked.connect(self._on_ok)
+
+        def _on_skip(self):
+            self._skipped = True
+            self._rates = {}
+            self.accept()
+
+        def _on_ok(self):
+            rates: Dict[str, float] = {}
+            bad_cells = []
+
+            for r in range(self.table.rowCount()):
+                ccy = (self.table.item(r, 0).text() or "").strip().upper()
+                val_item = self.table.item(r, 1)
+                val_text = (val_item.text() if val_item else "").strip().replace(",", "").replace(" ", "")
+                if not val_text:
+                    continue
+                try:
+                    v = float(val_text)
+                except ValueError:
+                    bad_cells.append(ccy)
+                    continue
+                if v <= 0:
+                    bad_cells.append(ccy)
+                    continue
+                rates[ccy] = v
+
+            if bad_cells:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "提示",
+                    "以下币种输入不合法（需为正数）：\n" + ", ".join(bad_cells),
+                )
+                return
+
+            self._rates = rates
+            self.accept()
+
+        def result_rates(self) -> Dict[str, float]:
+            return dict(self._rates)
+
+        def skipped(self) -> bool:
+            return bool(self._skipped)
+
     class Worker(QtCore.QObject):
         progress = Signal(int)
         status = Signal(str)
         rates = Signal(object)
         missing = Signal(object)
+        request_missing_rates = Signal(object)  # list[str]
         finished = Signal(int)
         error = Signal(str)
 
@@ -683,6 +757,23 @@ def launch_ui() -> bool:
             self.manual_threshold = manual_threshold
             self.manual_rates_text = manual_rates_text
 
+            self._wait_event = threading.Event()
+            self._missing_rates_from_ui: Dict[str, float] = {}
+            self._missing_list_last: List[str] = []
+
+        @Slot(object)
+        def set_missing_rates(self, payload: object):
+            """
+            payload: dict 如 {"rates": {CCY: rate, ...}}
+            """
+            rates = {}
+            if isinstance(payload, dict):
+                rates = payload.get("rates", {}) if "rates" in payload else payload
+                if rates is None:
+                    rates = {}
+            self._missing_rates_from_ui = dict(rates)
+            self._wait_event.set()
+
         def run(self):
             def progress_cb(step: int, total: int):
                 percent = int(step / max(total, 1) * 100)
@@ -691,22 +782,106 @@ def launch_ui() -> bool:
             def status_cb(msg: str):
                 self.status.emit(msg)
 
-            def rates_cb(rates: dict):
-                self.rates.emit(rates)
+            def rates_cb(rates_obj: dict):
+                self.rates.emit(rates_obj)
 
             def missing_cb(missing_list: list):
                 self.missing.emit(missing_list)
 
             try:
+                # 1) 读取 rate 表（修复后的解析）
+                status_cb("读取汇率...")
+                manual_threshold_value = parse_amount_input(self.manual_threshold or "")
+                manual_rates = parse_manual_rates(self.manual_rates_text or "")
+
+                try:
+                    fx_rate_local_per_usd, threshold_usd, rate_sheet = load_fx_rates_from_rate_sheet(
+                        self.file_path, THRESHOLD_USD
+                    )
+                    sheet_source = "sheet"
+                except ValueError as exc:
+                    # rate 表读不到时：仍允许用手动输入继续（保留原行为）
+                    if manual_rates:
+                        fx_rate_local_per_usd = {}
+                        threshold_usd = manual_threshold_value or THRESHOLD_USD
+                        rate_sheet = "手动输入"
+                        sheet_source = "manual"
+                    else:
+                        raise ValueError("未读取到 rate 表或 rate 表格式无法识别。请补充手动汇率后重试。") from exc
+
+                # 阈值覆盖
+                if manual_threshold_value:
+                    threshold_usd = manual_threshold_value
+
+                # 合并手动汇率（主界面多行输入仍可用）
+                if manual_rates:
+                    fx_rate_local_per_usd.update(manual_rates)
+                    if sheet_source == "sheet":
+                        sheet_source = "sheet+manual"
+
+                fx_rate_local_per_usd.setdefault("USD", 1.0)
+
+                rates_cb(
+                    {
+                        "rates": fx_rate_local_per_usd,
+                        "threshold_usd": threshold_usd,
+                        "sheet_name": rate_sheet,
+                        "source": sheet_source,
+                    }
+                )
+
+                # 2) 预扫描缺失币种 -> 弹窗表格填空 -> 继续/跳过
+                if rate_sheet != "手动输入":
+                    missing_list = prescan_missing_currencies(self.file_path, rate_sheet, fx_rate_local_per_usd)
+                else:
+                    # rate 表不存在时，无法排除 rate sheet；仍扫描所有除输出表外的前 3 表
+                    missing_list = []
+                self._missing_list_last = list(missing_list)
+
+                skipped_ccy: Set[str] = set()
+                if missing_list:
+                    status_cb("等待补充缺失汇率...")
+                    self._wait_event.clear()
+                    self.request_missing_rates.emit(missing_list)
+
+                    # 等 UI 回填（继续或跳过都会 set）
+                    self._wait_event.wait()
+
+                    provided = dict(self._missing_rates_from_ui or {})
+                    if provided:
+                        fx_rate_local_per_usd.update(provided)
+                        if sheet_source == "sheet":
+                            sheet_source = "sheet+ui"
+                        elif "ui" not in sheet_source:
+                            sheet_source = sheet_source + "+ui"
+
+                    skipped_ccy = set(missing_list) - set(provided.keys())
+
+                    # 更新 UI 显示最新汇率
+                    rates_cb(
+                        {
+                            "rates": fx_rate_local_per_usd,
+                            "threshold_usd": threshold_usd,
+                            "sheet_name": rate_sheet,
+                            "source": sheet_source,
+                        }
+                    )
+
+                # 3) 正式处理（用 override，避免二次读取导致丢失 UI 回填）
+                status_cb("开始筛选...")
                 count = process_workbook(
                     self.file_path,
                     progress_cb=progress_cb,
                     status_cb=status_cb,
                     rates_cb=rates_cb,
                     missing_cb=missing_cb,
-                    manual_threshold=self.manual_threshold,
-                    manual_rates_text=self.manual_rates_text,
+                    fx_rate_override=fx_rate_local_per_usd,
+                    threshold_override=threshold_usd,
+                    rate_sheet_override=rate_sheet,
+                    sheet_source_override=sheet_source,
+                    suppress_missing_ccy=skipped_ccy,  # 用户选择跳过的不再重复警告
                 )
+
             except Exception as exc:
                 self.error.emit(str(exc))
                 return
@@ -714,6 +889,8 @@ def launch_ui() -> bool:
             self.finished.emit(count)
 
     class MainWindow(QtWidgets.QWidget):
+        missing_rates_ready = Signal(object)  # 传给 worker.set_missing_rates
+
         def __init__(self):
             super().__init__()
             self._worker_thread = None
@@ -769,7 +946,7 @@ def launch_ui() -> bool:
             title_layout = QtWidgets.QVBoxLayout()
             title_label = QtWidgets.QLabel("USD 大额筛选")
             title_label.setFont(title_font)
-            subtitle_label = QtWidgets.QLabel("从 rate 表读取汇率，按 USD 阈值筛选记录")
+            subtitle_label = QtWidgets.QLabel("从 rate 表读取阈值与 LIMIT AMOUNT，推导“外币/美元”，按 USD 阈值筛选记录")
             subtitle_label.setObjectName("subtitle")
             subtitle_label.setFont(subtitle_font)
             subtitle_label.setWordWrap(True)
@@ -798,13 +975,13 @@ def launch_ui() -> bool:
             panel_layout.addLayout(file_row)
 
             hint_label = QtWidgets.QLabel(
-                f"输出 Sheet：{OUTPUT_SHEET_NAME}（Transfer Amount 将输出为绝对值）"
+                f"输出 Sheet：{OUTPUT_SHEET_NAME}（Transfer Amount 输出为绝对值）"
             )
             hint_label.setObjectName("hint")
             hint_label.setFont(small_font)
             panel_layout.addWidget(hint_label)
 
-            threshold_label = QtWidgets.QLabel("USD 阈值（可选）")
+            threshold_label = QtWidgets.QLabel("USD 阈值（可选，留空则从 rate 表读取）")
             threshold_label.setFont(label_font)
             panel_layout.addWidget(threshold_label)
 
@@ -812,7 +989,7 @@ def launch_ui() -> bool:
             self.threshold_edit.setPlaceholderText("自动读取（如 30M / 30000000）")
             panel_layout.addWidget(self.threshold_edit)
 
-            manual_rate_label = QtWidgets.QLabel("手动汇率（可选，格式：JPY=156.90）")
+            manual_rate_label = QtWidgets.QLabel("手动汇率（可选，格式：JPY=156.90；仅在需要时覆盖/补充）")
             manual_rate_label.setFont(label_font)
             panel_layout.addWidget(manual_rate_label)
 
@@ -990,11 +1167,15 @@ def launch_ui() -> bool:
             self._worker = Worker(file_path, manual_threshold_text, manual_rates_text)
             self._worker.moveToThread(self._worker_thread)
 
+            # 连接 UI -> Worker（缺失汇率回传）
+            self.missing_rates_ready.connect(self._worker.set_missing_rates)
+
             self._worker_thread.started.connect(self._worker.run)
             self._worker.progress.connect(self.progress_bar.setValue)
             self._worker.status.connect(self.status_label.setText)
             self._worker.rates.connect(self._handle_rates)
             self._worker.missing.connect(self._handle_missing)
+            self._worker.request_missing_rates.connect(self._prompt_missing_rates)
             self._worker.finished.connect(self._handle_finished)
             self._worker.error.connect(self._handle_error)
             self._worker.finished.connect(self._worker_thread.quit)
@@ -1002,6 +1183,27 @@ def launch_ui() -> bool:
             self._worker_thread.finished.connect(self._cleanup_worker)
 
             self._worker_thread.start()
+
+        def _prompt_missing_rates(self, missing_list: list):
+            # 表格填空：继续/跳过
+            if not missing_list:
+                self.missing_rates_ready.emit({"rates": {}})
+                return
+
+            dlg = MissingRatesDialog([str(x).strip().upper() for x in missing_list], self)
+
+            if hasattr(dlg, "exec"):
+                dlg.exec()
+            else:
+                dlg.exec_()
+
+            rates = dlg.result_rates()
+            self.missing_rates_ready.emit({"rates": rates})
+
+            if rates:
+                self.status_label.setText("已补充部分缺失汇率，继续处理中…")
+            else:
+                self.status_label.setText("已选择跳过缺失币种，继续处理中…")
 
         def _handle_finished(self, count: int):
             if count:
@@ -1019,11 +1221,12 @@ def launch_ui() -> bool:
             self._set_running(False)
 
         def _handle_missing(self, missing_list: list):
+            # 这里仅提示“未预料的缺失”（用户选择跳过的已在 worker 里 suppress）
             if not missing_list:
                 return
-            msg = "未找到以下币种汇率：\n" + ", ".join(missing_list)
+            msg = "仍未找到以下币种汇率（对应记录将无法换算 USD）：\n" + ", ".join(missing_list)
             QtWidgets.QMessageBox.warning(self, "提示", msg)
-            self.status_label.setText("部分币种未匹配到汇率。")
+            self.status_label.setText("部分币种仍未匹配到汇率。")
 
         def _handle_rates(self, rates: dict):
             if not rates or not isinstance(rates, dict):
@@ -1033,15 +1236,21 @@ def launch_ui() -> bool:
             threshold_usd = rates.get("threshold_usd", THRESHOLD_USD)
             sheet_name = rates.get("sheet_name", RATE_SHEET_NAME)
             source = rates.get("source", "sheet")
-            self.threshold_usd = threshold_usd
+            self.threshold_usd = float(threshold_usd)
+
             if source == "manual":
                 source_text = "来源: 手动输入"
             elif source == "sheet+manual":
                 source_text = "来源: rate 表 + 手动输入"
+            elif source == "sheet+ui":
+                source_text = "来源: rate 表 + 补充输入"
+            elif "ui" in source:
+                source_text = f"来源: {source}"
             else:
                 source_text = "来源: rate 表"
+
             lines = [
-                f"USD 阈值: {threshold_usd:,.0f}",
+                f"USD 阈值: {float(threshold_usd):,.2f}",
                 f"rate 表: {sheet_name}",
                 source_text,
                 "汇率（外币/美元）:",
@@ -1113,14 +1322,9 @@ def run_cli(file_path: Optional[str] = None) -> int:
         threshold_holder["value"] = rates.get("threshold_usd", THRESHOLD_USD)
         sheet_name = rates.get("sheet_name", RATE_SHEET_NAME)
         source = rates.get("source", "sheet")
-        print(f"USD 阈值: {threshold_holder['value']:,.0f}")
+        print(f"USD 阈值: {float(threshold_holder['value']):,.2f}")
         print(f"rate 表: {sheet_name}")
-        if source == "manual":
-            print("来源: 手动输入")
-        elif source == "sheet+manual":
-            print("来源: rate 表 + 手动输入")
-        else:
-            print("来源: rate 表")
+        print(f"来源: {source}")
         print("汇率（外币/美元）：")
         for ccy, rate in sorted(rate_map.items()):
             try:
@@ -1148,7 +1352,7 @@ def run_cli(file_path: Optional[str] = None) -> int:
     if count:
         print(f"完成：已写入 {count} 条记录到 {OUTPUT_SHEET_NAME}")
     else:
-        print(f"完成：未找到超过 {threshold_holder['value']:,.0f} USD 的记录")
+        print(f"完成：未找到超过 {float(threshold_holder['value']):,.2f} USD 的记录")
     open_file_path(file_path)
     return 0
 
@@ -1174,3 +1378,19 @@ def main():
 
 if __name__ == "__main__":
     main()
+    try:
+        from PySide6 import QtCore, QtGui, QtWidgets
+        from PySide6.QtCore import Signal, Slot
+        qt_modules = ("PySide6", QtCore, QtGui, QtWidgets, Signal, Slot)
+    except ImportError:
+        try:
+            from PyQt6 import QtCore, QtGui, QtWidgets
+            from PyQt6.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
+            qt_modules = ("PyQt6", QtCore, QtGui, QtWidgets, Signal, Slot)
+        except ImportError:
+            try:
+                from PyQt5 import QtCore, QtGui, QtWidgets
+                from PyQt5.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
+                qt_modules = ("PyQt5", QtCore, QtGui, QtWidgets, Signal, Slot)
+            except ImportError:
+                print("未检测到可用的 Qt 绑定库。")
