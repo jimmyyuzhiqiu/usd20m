@@ -13,12 +13,56 @@ from openpyxl.utils import get_column_letter
 # 默认参数
 # =========================
 THRESHOLD_USD_DEFAULT = 20_000_000
-OUTPUT_SHEET_NAME = "USD_over_20M"
+
+# 输出 sheet 动态命名：USD_over_20M / USD_over_30M / USD_over_12.5M ...
+OUTPUT_SHEET_PREFIX = "USD_over_"
+
 RATE_SHEET_NAME = "rate"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(BASE_DIR, "app.ico")
 LOGO_SRC_PATH = os.path.join(BASE_DIR, "ing-logo.png")
+
+
+# =========================
+# 输出 sheet 命名工具
+# =========================
+def _fmt_num_for_sheet(x: float) -> str:
+    # 例如 20.0 -> "20"；12.5 -> "12.5"
+    if abs(x - round(x)) < 1e-9:
+        return str(int(round(x)))
+    return f"{x:.2f}".rstrip("0").rstrip(".")
+
+
+def make_output_sheet_name(threshold_usd: float) -> str:
+    """
+    根据阈值生成输出 sheet 名：
+    - >= 1e9: USD_over_1.2B
+    - >= 1e6: USD_over_20M
+    - >= 1e3: USD_over_250K
+    - else:   USD_over_999
+    并保证合法且不超过 31 字符
+    """
+    t = float(threshold_usd)
+
+    if t >= 1e9:
+        name = f"{OUTPUT_SHEET_PREFIX}{_fmt_num_for_sheet(t / 1e9)}B"
+    elif t >= 1e6:
+        name = f"{OUTPUT_SHEET_PREFIX}{_fmt_num_for_sheet(t / 1e6)}M"
+    elif t >= 1e3:
+        name = f"{OUTPUT_SHEET_PREFIX}{_fmt_num_for_sheet(t / 1e3)}K"
+    else:
+        name = f"{OUTPUT_SHEET_PREFIX}{_fmt_num_for_sheet(t)}"
+
+    # Excel sheet name 不允许这些字符：[]:*?/\
+    invalid = set(r"[]:*?/\\")
+
+    name = "".join("_" if c in invalid else c for c in name)
+    return name[:31]
+
+
+def is_output_sheet(name: str) -> bool:
+    return str(name).strip().lower().startswith(OUTPUT_SHEET_PREFIX.lower())
 
 
 # =========================
@@ -118,7 +162,10 @@ def autofit_column_width(ws, min_width=8, max_width=60, extra=2):
 
 
 def write_df_to_existing_workbook(file_path: str, sheet_name: str, df: pd.DataFrame):
-    """写入到同一个 Excel 的最后一个 sheet（若同名则覆盖）"""
+    """
+    写入到同一个 Excel（若同名则覆盖）
+    注意：按你的要求“只覆盖同名字的”，不会删除其它 USD_over_* 输出表
+    """
     wb = load_workbook(file_path)
 
     if sheet_name in wb.sheetnames:
@@ -303,7 +350,8 @@ def load_rates_and_threshold(file_path: str) -> Tuple[Dict[str, float], float, s
 def prescan_missing_currencies(file_path: str, rate_sheet_name: str, rates: Dict[str, float]) -> List[str]:
     """预扫描前 3 个数据表，找缺失 SettleCurrency 对应的汇率"""
     xls = pd.ExcelFile(file_path, engine="openpyxl")
-    data_sheets = [s for s in xls.sheet_names if s not in (rate_sheet_name, OUTPUT_SHEET_NAME)]
+    # 排除 rate 表 + 所有历史输出表（USD_over_*）
+    data_sheets = [s for s in xls.sheet_names if s != rate_sheet_name and not is_output_sheet(s)]
     sheet_names = data_sheets[:3]
 
     missing: Set[str] = set()
@@ -335,6 +383,7 @@ def process_workbook(
     rates: Dict[str, float],
     threshold_usd: float,
     rate_sheet_name: str,
+    output_sheet_name: str,
     progress_cb=None,
     status_cb=None,
 ) -> Tuple[int, Set[str]]:
@@ -350,11 +399,12 @@ def process_workbook(
             progress_cb(int(max(0, min(100, p))))
 
     xls = pd.ExcelFile(file_path, engine="openpyxl")
-    data_sheets = [s for s in xls.sheet_names if s not in (rate_sheet_name, OUTPUT_SHEET_NAME)]
+    # 排除 rate 表 + 所有历史输出表（USD_over_*）
+    data_sheets = [s for s in xls.sheet_names if s != rate_sheet_name and not is_output_sheet(s)]
     sheet_names = data_sheets[:3]
 
     if not sheet_names:
-        write_df_to_existing_workbook(file_path, OUTPUT_SHEET_NAME, pd.DataFrame())
+        write_df_to_existing_workbook(file_path, output_sheet_name, pd.DataFrame())
         status("未找到可处理的数据表，已生成空结果。")
         progress(100)
         return 0, set()
@@ -400,11 +450,11 @@ def process_workbook(
     status("写入结果...")
     if results:
         out_df = pd.concat(results, ignore_index=True)
-        write_df_to_existing_workbook(file_path, OUTPUT_SHEET_NAME, out_df)
+        write_df_to_existing_workbook(file_path, output_sheet_name, out_df)
         progress(100)
         return len(out_df), missing_ccy_set
 
-    write_df_to_existing_workbook(file_path, OUTPUT_SHEET_NAME, pd.DataFrame())
+    write_df_to_existing_workbook(file_path, output_sheet_name, pd.DataFrame())
     progress(100)
     return 0, missing_ccy_set
 
@@ -700,9 +750,9 @@ def launch_ui() -> bool:
     class Worker(QtCore.QObject):
         progress = Signal(int)
         status = Signal(str)
-        rates_ready = Signal(object)          # {"rates":..., "threshold":..., "rate_sheet":..., "source":...}
-        request_missing_rates = Signal(object)  # list[str]
-        finished = Signal(object)             # {"count":..., "threshold":..., "missing":..., "skipped":...}
+        rates_ready = Signal(object)           # {"rates":..., "threshold":..., "rate_sheet":..., "source":..., "output_sheet":...}
+        request_missing_rates = Signal(object) # list[str]
+        finished = Signal(object)              # {"count":..., "threshold":..., "missing":..., "skipped":..., "output_sheet":...}
         error = Signal(str)
 
         def __init__(self, file_path: str):
@@ -737,6 +787,7 @@ def launch_ui() -> bool:
                 self.status.emit("读取 rate 表并识别阈值/汇率...")
 
                 rates, threshold, rate_sheet, source = load_rates_and_threshold(self.file_path)
+                output_sheet_name = make_output_sheet_name(threshold)
 
                 # 展示识别结果
                 self.rates_ready.emit(
@@ -745,6 +796,7 @@ def launch_ui() -> bool:
                         "threshold": threshold,
                         "rate_sheet": rate_sheet,
                         "source": source,
+                        "output_sheet": output_sheet_name,
                     }
                 )
 
@@ -766,10 +818,12 @@ def launch_ui() -> bool:
                             "threshold": threshold,
                             "rate_sheet": rate_sheet,
                             "source": source,
+                            "output_sheet": output_sheet_name,
                         }
                     )
 
                 self.status.emit("开始筛选并导出...")
+
                 def progress_cb(p: int):
                     self.progress.emit(p)
 
@@ -781,6 +835,7 @@ def launch_ui() -> bool:
                     rates=rates,
                     threshold_usd=threshold,
                     rate_sheet_name=rate_sheet,
+                    output_sheet_name=output_sheet_name,
                     progress_cb=progress_cb,
                     status_cb=status_cb,
                 )
@@ -792,7 +847,7 @@ def launch_ui() -> bool:
                     {
                         "count": int(count),
                         "threshold": float(threshold),
-                        "output_sheet": OUTPUT_SHEET_NAME,
+                        "output_sheet": output_sheet_name,
                         "missing": sorted(final_missing),
                         "skipped": sorted(list(skipped_ccy)),
                     }
@@ -885,10 +940,11 @@ def launch_ui() -> bool:
 
             panel_layout.addLayout(file_row)
 
-            hint_label = QtWidgets.QLabel(f"输出 Sheet：{OUTPUT_SHEET_NAME}（Transfer Amount 输出为绝对值）")
-            hint_label.setObjectName("hint")
-            hint_label.setFont(small_font)
-            panel_layout.addWidget(hint_label)
+            # 动态提示（将由 _handle_rates_ready 更新）
+            self.hint_label = QtWidgets.QLabel("输出 Sheet：自动生成（依据 rate 里的 USD 阈值；同名覆盖）")
+            self.hint_label.setObjectName("hint")
+            self.hint_label.setFont(small_font)
+            panel_layout.addWidget(self.hint_label)
 
             rate_label = QtWidgets.QLabel("识别结果（阈值 & 外币/美元）")
             rate_label.setFont(label_font)
@@ -1017,6 +1073,7 @@ def launch_ui() -> bool:
             self.progress_bar.setValue(0)
             self.status_label.setText("准备处理中…")
             self.rate_box.setPlainText("读取 rate 中…")
+            self.hint_label.setText("输出 Sheet：识别阈值后自动生成（同名覆盖）")
             self._set_running(True)
 
             self._worker_thread = QtCore.QThread()
@@ -1045,11 +1102,15 @@ def launch_ui() -> bool:
                 threshold = float(payload.get("threshold", THRESHOLD_USD_DEFAULT))
                 rate_sheet = payload.get("rate_sheet", RATE_SHEET_NAME)
                 source = payload.get("source", "exchange_vs_cny")
+                out_sheet = payload.get("output_sheet") or make_output_sheet_name(threshold)
             except Exception:
                 rates = {}
                 threshold = float(THRESHOLD_USD_DEFAULT)
                 rate_sheet = RATE_SHEET_NAME
                 source = "exchange_vs_cny"
+                out_sheet = make_output_sheet_name(threshold)
+
+            self.hint_label.setText(f"输出 Sheet：{out_sheet}（Transfer Amount 输出为绝对值；同名覆盖）")
 
             source_text = "来源：EXCHANGE VS CNY 推导（不依赖 LIMIT 公式）" if source == "exchange_vs_cny" else "来源：LIMIT AMOUNT 推导"
             lines = [
@@ -1077,7 +1138,7 @@ def launch_ui() -> bool:
         def _handle_finished(self, payload: dict):
             count = int(payload.get("count", 0))
             threshold = float(payload.get("threshold", THRESHOLD_USD_DEFAULT))
-            out_sheet = payload.get("output_sheet", OUTPUT_SHEET_NAME)
+            out_sheet = payload.get("output_sheet") or make_output_sheet_name(threshold)
             missing = payload.get("missing", []) or []
 
             msg = f"已完成导出：{out_sheet}\n阈值：{threshold:,.2f}\n命中记录：{count}"
