@@ -1,3 +1,4 @@
+(.venv) C:\Users\MY43DN\Desktop>
 
 (.venv) C:\Users\MY43DN\Desktop>py -m PyInstaller --noconfirm --clean --windowed --name "USD大额筛选" --icon "app.ico" --add-data "ing-logo.png;." --collect-all PySide6 --collect-all shiboken6 "usd20m_ui.py"
 246 INFO: PyInstaller: 6.17.0, contrib hooks: 2025.11
@@ -74,7 +75,6 @@
 ERROR: Aborting build process due to attempt to collect multiple Qt bindings packages: attempting to run hook for 'PyQt5', while hook for 'PySide6' has already been run! PyInstaller does not support multiple Qt bindings packages in a frozen application - either ensure that the build environment has only one Qt bindings package installed, or exclude the extraneous bindings packages via the module exclusion mechanism (--exclude command-line option, or excludes list in the spec file).
 
 (.venv) C:\Users\MY43DN\Desktop>
-
 
 
 
