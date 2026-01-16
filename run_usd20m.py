@@ -1378,19 +1378,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    try:
-        from PySide6 import QtCore, QtGui, QtWidgets
-        from PySide6.QtCore import Signal, Slot
-        qt_modules = ("PySide6", QtCore, QtGui, QtWidgets, Signal, Slot)
-    except ImportError:
-        try:
-            from PyQt6 import QtCore, QtGui, QtWidgets
-            from PyQt6.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
-            qt_modules = ("PyQt6", QtCore, QtGui, QtWidgets, Signal, Slot)
-        except ImportError:
-            try:
-                from PyQt5 import QtCore, QtGui, QtWidgets
-                from PyQt5.QtCore import pyqtSignal as Signal, pyqtSlot as Slot
-                qt_modules = ("PyQt5", QtCore, QtGui, QtWidgets, Signal, Slot)
-            except ImportError:
-                print("未检测到可用的 Qt 绑定库。")
