@@ -1,3 +1,80 @@
+
+(.venv) C:\Users\MY43DN\Desktop>py -m PyInstaller --noconfirm --clean --windowed --name "USD大额筛选" --icon "app.ico" --add-data "ing-logo.png;." --hidden-import PySide6.QtSvg --hidden-import PySide6.QtSvgWidgets "usd20m_ui.py"
+262 INFO: PyInstaller: 6.17.0, contrib hooks: 2025.11
+262 INFO: Python: 3.14.0
+299 INFO: Platform: Windows-11-10.0.22631-SP0
+300 INFO: Python environment: c:\Users\MY43DN\Desktop\.venv
+301 INFO: wrote C:\Users\MY43DN\Desktop\USD大额筛选.spec
+304 INFO: Removing temporary files and cleaning cache in C:\Users\MY43DN\AppData\Local\pyinstaller
+318 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\MY43DN\\Desktop',
+ 'C:\\Program Files\\Python314\\python314.zip',
+ 'C:\\Program Files\\Python314\\DLLs',
+ 'C:\\Program Files\\Python314\\Lib',
+ 'C:\\Program Files\\Python314',
+ 'c:\\Users\\MY43DN\\Desktop\\.venv',
+ 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages',
+ 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\win32',
+ 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\win32\\lib',
+ 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\Pythonwin',
+ 'C:\\Users\\MY43DN\\Desktop']
+1144 INFO: Appending 'datas' from .spec
+1144 INFO: checking Analysis
+1145 INFO: Building Analysis because Analysis-00.toc is non existent
+1145 INFO: Looking for Python shared library...
+1145 INFO: Using Python shared library: C:\Program Files\Python314\python314.dll
+1145 INFO: Running Analysis Analysis-00.toc
+1145 INFO: Target bytecode optimization level: 0
+1145 INFO: Initializing module dependency graph...
+1147 INFO: Initializing module graph hook caches...
+1251 INFO: Analyzing modules for base_library.zip ...
+3941 INFO: Processing standard module hook 'hook-encodings.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+4732 INFO: Processing standard module hook 'hook-pickle.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+5251 INFO: Processing standard module hook 'hook-difflib.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+5314 INFO: Processing standard module hook 'hook-heapq.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+11665 INFO: Caching module dependency graph...
+11698 INFO: Analyzing C:\Users\MY43DN\Desktop\usd20m_ui.py
+11756 INFO: Processing standard module hook 'hook-pandas.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13695 INFO: Processing standard module hook 'hook-platform.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13756 INFO: Processing standard module hook 'hook-_ctypes.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+13995 INFO: Processing standard module hook 'hook-sysconfig.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+14073 INFO: Processing standard module hook 'hook-numpy.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+16062 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+16264 INFO: Processing standard module hook 'hook-xml.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+20871 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+20873 INFO: SetuptoolsInfo: initializing cached setuptools info...
+27504 INFO: Processing standard module hook 'hook-pytz.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+32269 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+36343 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+36457 INFO: Processing standard module hook 'hook-matplotlib.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+37258 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+37499 INFO: Processing pre-safe-import-module hook 'hook-gi.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+37884 INFO: Processing standard module hook 'hook-matplotlib.backend_bases.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+38118 INFO: Processing standard module hook 'hook-PIL.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+38285 INFO: Processing standard module hook 'hook-PIL.Image.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+39080 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+39463 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+41169 INFO: Processing standard module hook 'hook-matplotlib.backends.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+41339 INFO: Processing standard module hook 'hook-matplotlib.pyplot.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+43184 INFO: Processing standard module hook 'hook-dateutil.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+43342 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+47599 INFO: Processing standard module hook 'hook-openpyxl.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+52266 INFO: Processing standard module hook 'hook-sqlite3.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+52825 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+53803 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+55925 INFO: Processing standard module hook 'hook-PySide6.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+56233 INFO: Processing standard module hook 'hook-shiboken6.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+56584 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+61376 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+67485 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+90113 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+94542 INFO: Processing standard module hook 'hook-PyQt5.py' from 'c:\\Users\\MY43DN\\Desktop\\.venv\\Lib\\site-packages\\PyInstaller\\hooks'
+ERROR: Aborting build process due to attempt to collect multiple Qt bindings packages: attempting to run hook for 'PyQt5', while hook for 'PySide6' has already been run! PyInstaller does not support multiple Qt bindings packages in a frozen application - either ensure that the build environment has only one Qt bindings package installed, or exclude the extraneous bindings packages via the module exclusion mechanism (--exclude command-line option, or excludes list in the spec file).
+
+(.venv) C:\Users\MY43DN\Desktop>
+
+
+
 import os
 import subprocess
 import sys
